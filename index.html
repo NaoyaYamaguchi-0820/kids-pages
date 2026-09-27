@@ -68,6 +68,23 @@
     border: 3px solid rgba(160,140,255,0.6);
     box-sizing: border-box;
   }
+  .ball {
+    width: 90px;
+    height: 90px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #ffffff 0 8%, #ff6b6b 30%, #d94848 100%);
+    position: relative;
+    overflow: hidden;
+  }
+  .ball::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 41%;
+    height: 18%;
+    background: rgba(255, 255, 255, 0.75);
+  }
 </style>
 </head>
 <body>
@@ -76,6 +93,10 @@
     <a class="game" href="bubbles.html">
       <span class="bubble"></span>
       <span>シャボンだま</span>
+    </a>
+    <a class="game" href="balls.html">
+      <span class="ball"></span>
+      <span>ボールころころ</span>
     </a>
   </div>
 </body>

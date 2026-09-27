@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>ボールころころ</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: linear-gradient(#ffe9b8, #fff8e6 70%, #e8f6d8);
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #game {
+    position: fixed;
+    inset: 0;
+  }
+  #game canvas {
+    display: block;
+  }
+  #sound {
+    position: fixed;
+    top: calc(16px + env(safe-area-inset-top));
+    right: calc(16px + env(safe-area-inset-right));
+    width: 72px;
+    height: 72px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.85);
+    box-shadow: 0 4px 0 #e6c48a;
+    color: #b0793a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+  #sound:active {
+    transform: translateY(3px);
+    box-shadow: 0 1px 0 #e6c48a;
+  }
+  #sound svg {
+    width: 44px;
+    height: 44px;
+  }
+  #sound .on { display: none; }
+  #sound.enabled .on { display: inline; }
+  #sound.enabled .off { display: none; }
+</style>
+</head>
+<body>
+<div id="game"></div>
+<button id="sound" type="button" aria-label="おとをだす" aria-pressed="false">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/>
+    <g class="on"><path d="M16 9a4 4 0 0 1 0 6"/><path d="M18.5 6.5a7.5 7.5 0 0 1 0 11"/></g>
+    <g class="off"><path d="M16 9l5 6"/><path d="M21 9l-5 6"/></g>
+  </svg>
+</button>
+<script src="vendor/phaser/phaser.min.js"></script>
+<script>
+(() => {
+  // ---- 音（Web Audio で生成するのでオフラインでも鳴る） ----
+  // 音はボタンで明示的にオンにしたときだけ鳴らす
+  let audio = null;
+  let soundOn = false;
+  function ensureAudio() {
+    if (!soundOn) return null;
+    if (!audio) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      // iPhone のマナーモードでも鳴るようにする（対応ブラウザのみ）
+      if (navigator.audioSession) navigator.audioSession.type = 'playback';
+      audio = new AC();
+    }
+    if (audio.state === 'suspended') audio.resume();
+    return audio;
+  }
+
+  function tone(type, from, to, duration, volume) {
+    const ac = ensureAudio();
+    if (!ac) return;
+    const now = ac.currentTime;
+    const osc = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(from, now);
+    osc.frequency.exponentialRampToValueAtTime(to, now + duration * 0.6);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(volume, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    osc.connect(gain).connect(ac.destination);
+    osc.start(now);
+    osc.stop(now + duration + 0.05);
+  }
+
+  // ドレミファソラシド
+  const NOTES = [523.25, 587.33, 659.25, 698.46, 783.99, 880.0, 987.77, 1046.5];
+
+  // ボールが出てくる音：ポンッ
+  function playSpawn(note) {
+    tone('sine', note * 0.6, note, 0.25, 0.3);
+  }
+  // 跳ねる音：ぽよん（小さいボールほど高い音）
+  function playBounce(note, strength) {
+    tone('sine', note * 0.5, note * 0.35, 0.18, Math.min(0.25, 0.06 + strength * 0.02));
+  }
+  // 蹴り上げる音：ぴょーん
+  function playKick(note) {
+    tone('triangle', note * 0.8, note * 1.6, 0.3, 0.25);
+  }
+
+  const soundButton = document.getElementById('sound');
+  soundButton.addEventListener('click', () => {
+    soundOn = !soundOn;
+    soundButton.classList.toggle('enabled', soundOn);
+    soundButton.setAttribute('aria-pressed', String(soundOn));
+    soundButton.setAttribute('aria-label', soundOn ? 'おとをけす' : 'おとをだす');
+    // オンにしたことが分かるように一音鳴らす
+    if (soundOn) playSpawn(NOTES[4]);
+  });
+
+  // ---- ボールの見た目 ----
+  const COLORS = [
+    { base: '#ff6b6b', dark: '#d94848' },
+    { base: '#ffa94d', dark: '#e0842a' },
+    { base: '#ffd43b', dark: '#e0b418' },
+    { base: '#69db7c', dark: '#40b556' },
+    { base: '#4dabf7', dark: '#2a86d1' },
+    { base: '#b197fc', dark: '#8a6fe0' },
+    { base: '#f783ac', dark: '#d65b88' },
+  ];
+  const PATTERNS = ['face', 'stripe', 'dots'];
+  const TEX_RADIUS = 64;
+  const MAX_BALLS = 30;
+
+  // 全ボールの絵を1枚のテクスチャにまとめて描く（WebGL で描画が崩れないように）
+  function createBallTextures(scene) {
+    const size = TEX_RADIUS * 2;
+    const tex = scene.textures.createCanvas('balls', size * PATTERNS.length, size * COLORS.length);
+    const ctx = tex.getContext();
+    const frames = [];
+    COLORS.forEach((color, row) => {
+      PATTERNS.forEach((pattern, col) => {
+        const name = `${row}-${pattern}`;
+        ctx.save();
+        ctx.translate(col * size, row * size);
+        drawBall(ctx, color, pattern);
+        ctx.restore();
+        tex.add(name, 0, col * size, row * size, size, size);
+        frames.push(name);
+      });
+    });
+    tex.refresh();
+    return frames;
+  }
+
+  function drawBall(ctx, color, pattern) {
+    const size = TEX_RADIUS * 2;
+    const c = TEX_RADIUS;
+    const r = TEX_RADIUS - 2;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(c, c, r, 0, Math.PI * 2);
+    ctx.clip();
+
+    const g = ctx.createRadialGradient(c - r * 0.35, c - r * 0.35, r * 0.1, c, c, r);
+    g.addColorStop(0, '#ffffff');
+    g.addColorStop(0.25, color.base);
+    g.addColorStop(1, color.dark);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, size, size);
+
+    // 転がっているのが分かるように模様を入れる
+    if (pattern === 'stripe') {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+      ctx.fillRect(0, c - r * 0.18, size, r * 0.36);
+    } else if (pattern === 'dots') {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+      [[0, -0.5], [0.45, 0.25], [-0.45, 0.25], [0, 0.05]].forEach(([dx, dy]) => {
+        ctx.beginPath();
+        ctx.arc(c + dx * r, c + dy * r, r * 0.15, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    } else {
+      // にこにこ顔
+      ctx.fillStyle = '#3b3b3b';
+      ctx.beginPath();
+      ctx.arc(c - r * 0.3, c - r * 0.12, r * 0.1, 0, Math.PI * 2);
+      ctx.arc(c + r * 0.3, c - r * 0.12, r * 0.1, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#3b3b3b';
+      ctx.lineWidth = r * 0.08;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.arc(c, c + r * 0.08, r * 0.32, Math.PI * 0.2, Math.PI * 0.8);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255, 120, 150, 0.45)';
+      ctx.beginPath();
+      ctx.arc(c - r * 0.5, c + r * 0.15, r * 0.12, 0, Math.PI * 2);
+      ctx.arc(c + r * 0.5, c + r * 0.15, r * 0.12, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // つやつやのハイライト
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+    ctx.beginPath();
+    ctx.ellipse(c - r * 0.4, c - r * 0.45, r * 0.2, r * 0.11, -Math.PI / 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = color.dark;
+    ctx.beginPath();
+    ctx.arc(c, c, r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  class BallScene extends Phaser.Scene {
+    constructor() {
+      super('balls');
+      this.balls = [];
+      this.lastBounce = 0;
+    }
+
+    create() {
+      this.ballFrames = createBallTextures(this);
+
+      this.makeRing();
+      this.updateBounds();
+      this.scale.on('resize', this.updateBounds, this);
+
+      // 何本の指で同時に触っても反応するように
+      this.input.addPointer(4);
+      this.input.on('pointerdown', this.onPointerDown, this);
+
+      this.matter.world.on('collisionstart', this.onCollision, this);
+
+      // 最初から少しボールを置いておく
+      const { width } = this.scale;
+      for (let i = 0; i < 4; i++) {
+        this.time.delayedCall(200 + i * 250, () => {
+          this.spawnBall(width * (0.2 + 0.2 * i), this.ballRadius() * 1.5, false);
+        });
+      }
+    }
+
+    makeRing() {
+      const g = this.make.graphics({ x: 0, y: 0 }, false);
+      g.lineStyle(6, 0xffffff, 1);
+      g.strokeCircle(64, 64, 58);
+      g.generateTexture('ring', 128, 128);
+      g.destroy();
+    }
+
+    ballRadius() {
+      const { width, height } = this.scale;
+      return Math.max(28, Math.min(width, height) * 0.075);
+    }
+
+    updateBounds() {
+      const { width, height } = this.scale;
+      // 上は開けておき、跳ね上がったボールが画面の上から戻ってこられるようにする
+      this.matter.world.setBounds(0, -height, width, height * 2, 200, true, true, false, true);
+      this.balls.forEach((ball) => {
+        if (ball.x > width - ball.radius) ball.setPosition(width - ball.radius, ball.y);
+        if (ball.y > height - ball.radius) ball.setPosition(ball.x, height - ball.radius);
+      });
+    }
+
+    onPointerDown(pointer) {
+      const x = pointer.x;
+      const y = pointer.y;
+
+      // ボールに触ったらぴょーんと跳ねる。小さな指でも当たりやすいよう判定を広めに
+      for (let i = this.balls.length - 1; i >= 0; i--) {
+        const ball = this.balls[i];
+        if (ball.removing) continue;
+        const hit = ball.radius * 1.3;
+        if (Phaser.Math.Distance.Between(x, y, ball.x, ball.y) <= hit) {
+          this.kick(ball, x);
+          return;
+        }
+      }
+
+      // 何もないところなら、そこからボールが出てくる
+      this.spawnBall(x, y, true);
+    }
+
+    spawnBall(x, y, withSound) {
+      const { width, height } = this.scale;
+      const radius = this.ballRadius() * Phaser.Math.FloatBetween(0.8, 1.3);
+      x = Phaser.Math.Clamp(x, radius, width - radius);
+      y = Phaser.Math.Clamp(y, radius, height - radius);
+
+      const frame = Phaser.Utils.Array.GetRandom(this.ballFrames);
+      const ball = this.matter.add.image(x, y, 'balls', frame, {
+        shape: { type: 'circle', radius: TEX_RADIUS },
+        restitution: 0.65,
+        friction: 0.02,
+        frictionAir: 0.004,
+        frictionStatic: 0.1,
+        density: 0.002,
+      });
+      ball.setScale(radius / TEX_RADIUS);
+      ball.radius = radius;
+      // 大きいボールほど低い音
+      const t = Phaser.Math.Clamp((radius / this.ballRadius() - 0.8) / 0.5, 0, 1);
+      ball.note = NOTES[Math.round((1 - t) * (NOTES.length - 1))];
+      ball.lastSound = 0;
+      ball.setVelocity(Phaser.Math.FloatBetween(-2, 2), Phaser.Math.FloatBetween(-3, 0));
+      ball.setAngularVelocity(Phaser.Math.FloatBetween(-0.05, 0.05));
+
+      this.balls.push(ball);
+      this.burst(x, y, radius);
+      if (withSound) playSpawn(ball.note);
+
+      // 多くなりすぎたら古いものから消す
+      const alive = this.balls.filter((b) => !b.removing);
+      if (alive.length > MAX_BALLS) this.removeBall(alive[0]);
+    }
+
+    kick(ball, pointerX) {
+      // 触った位置と反対側へ飛ぶ
+      const dir = Phaser.Math.Clamp((ball.x - pointerX) / ball.radius, -1, 1);
+      ball.setVelocity(dir * 5 + Phaser.Math.FloatBetween(-1.5, 1.5), Phaser.Math.FloatBetween(-17, -13));
+      ball.setAngularVelocity(Phaser.Math.FloatBetween(-0.2, 0.2));
+      this.burst(ball.x, ball.y, ball.radius);
+      playKick(ball.note);
+    }
+
+    removeBall(ball) {
+      ball.removing = true;
+      this.tweens.add({
+        targets: ball,
+        alpha: 0,
+        duration: 400,
+        onComplete: () => {
+          this.balls = this.balls.filter((b) => b !== ball);
+          ball.destroy();
+        },
+      });
+    }
+
+    burst(x, y, radius) {
+      const ring = this.add.image(x, y, 'ring');
+      ring.setScale((radius * 1.1) / 64);
+      ring.setAlpha(0.9);
+      this.tweens.add({
+        targets: ring,
+        scale: (radius * 1.9) / 64,
+        alpha: 0,
+        duration: 350,
+        ease: 'Cubic.easeOut',
+        onComplete: () => ring.destroy(),
+      });
+    }
+
+    onCollision(event) {
+      const now = this.time.now;
+      event.pairs.forEach((pair) => {
+        const a = pair.bodyA;
+        const b = pair.bodyB;
+        const speed = Math.hypot(a.velocity.x - b.velocity.x, a.velocity.y - b.velocity.y);
+        if (speed < 3) return;
+        const ball = (a.gameObject && a.gameObject.note ? a.gameObject : null)
+          || (b.gameObject && b.gameObject.note ? b.gameObject : null);
+        if (!ball || ball.removing) return;
+        // 同時にたくさん鳴って うるさくならないように間引く
+        if (now - ball.lastSound < 150 || now - this.lastBounce < 40) return;
+        ball.lastSound = now;
+        this.lastBounce = now;
+        playBounce(ball.note, speed);
+      });
+    }
+  }
+
+  ['contextmenu', 'gesturestart', 'dblclick'].forEach((type) => {
+    document.addEventListener(type, (e) => e.preventDefault(), { passive: false });
+  });
+
+  new Phaser.Game({
+    type: Phaser.AUTO,
+    parent: 'game',
+    transparent: true,
+    banner: false,
+    scale: {
+      mode: Phaser.Scale.RESIZE,
+      width: '100%',
+      height: '100%',
+    },
+    physics: {
+      default: 'matter',
+      matter: {
+        gravity: { y: 1 },
+      },
+    },
+    scene: BallScene,
+  });
+})();
+</script>
+</body>
+</html>
