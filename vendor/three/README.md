@@ -3,7 +3,7 @@
 - バージョン: 0.186.1
 - ライセンス: MIT（`LICENSE`）
 
-three.js 本体と `OrbitControls` を1ファイルにまとめ、`<script>` タグで読み込むとグローバル変数 `THREE` として使えるようにしたものです。
+three.js 本体と `OrbitControls`・`GLTFLoader` を1ファイルにまとめ、`<script>` タグで読み込むとグローバル変数 `THREE` として使えるようにしたものです。
 ES モジュール版は `file://` で開いたときに読み込めないため、このようにまとめています。
 
 ## 作り直す手順

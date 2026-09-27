@@ -120,6 +120,7 @@
   </button>
 </div>
 <script src="vendor/three/three.min.js"></script>
+<script src="assets/kenney/models.js"></script>
 <script>
 (() => {
   // ---- 音（Web Audio で生成するのでオフラインでも鳴る） ----
@@ -422,7 +423,53 @@
           .forEach(([x, y, z]) => part(g, sphere(0.12), 0xff6b6b, x, y, z));
       },
     },
+    // ここから下は Kenney (www.kenney.nl) の3Dモデル（CC0）
+    { name: 'トラック', kenney: 'truck', size: 3.0 },
+    { name: 'バイク', kenney: 'motorcycle', size: 2.8 },
+    { name: 'おともだち', kenney: 'character', size: 2.4 },
+    { name: 'コイン', kenney: 'coin', size: 1.8 },
+    { name: 'たてもの', kenney: 'building', size: 2.4 },
+    { name: 'ふんすい', kenney: 'fountain', size: 2.6 },
+    { name: 'トロフィー', kenney: 'trophy', size: 2.4 },
   ];
+
+  // ---- Kenney のモデルを読み込む ----
+  // assets/kenney/models.js に埋め込んだデータから読むので、オフラインでもファイルを直接開いても動く
+  const gltfLoader = new THREE.GLTFLoader();
+  const kenneyCache = new Map();
+  function loadKenney(id) {
+    if (!kenneyCache.has(id)) {
+      const binary = atob(window.KENNEY_MODELS[id]);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      kenneyCache.set(id, new Promise((resolve, reject) => {
+        gltfLoader.parse(bytes.buffer, '', resolve, reject);
+      }));
+    }
+    return kenneyCache.get(id);
+  }
+
+  // 大きさをそろえて、足元を地面(y=0)に、中心を真ん中に置く
+  function addKenney(group, model) {
+    group.userData.shared = true;
+    loadKenney(model.kenney).then((gltf) => {
+      const object = gltf.scene.clone(true);
+      const box = new THREE.Box3().setFromObject(object);
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      const scale = model.size / Math.max(size.x, size.y, size.z);
+      object.scale.setScalar(scale);
+      object.position.set(-center.x * scale, -box.min.y * scale, -center.z * scale);
+      group.add(object);
+
+      // 「ふだんの動き」のアニメーションがあれば流す
+      const idle = gltf.animations.find((clip) => clip.name === 'idle');
+      if (idle) {
+        group.userData.mixer = new THREE.AnimationMixer(object);
+        group.userData.mixer.clipAction(idle).play();
+      }
+    });
+  }
 
   // ---- 切り替えとアニメーション ----
   const nameLabel = document.getElementById('name');
@@ -437,7 +484,10 @@
   }
 
   function disposeGroup(group) {
-    group.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
+    // Kenney のモデルは形のデータを使い回すので破棄しない
+    if (!group.userData.shared) {
+      group.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
+    }
     scene.remove(group);
   }
 
@@ -448,7 +498,9 @@
       leaving = { group: current.group, start: performance.now() };
     }
     const group = new THREE.Group();
-    MODELS[index].build(group);
+    const model = MODELS[index];
+    if (model.kenney) addKenney(group, model);
+    else model.build(group);
     group.scale.setScalar(0.001);
     scene.add(group);
     current = { group, born: performance.now(), jumpStart: -Infinity };
@@ -489,9 +541,13 @@
     document.addEventListener(type, (e) => e.preventDefault(), { passive: false });
   });
 
+  let lastFrame = performance.now();
   function animate(now) {
+    const dt = Math.min((now - lastFrame) / 1000, 0.1);
+    lastFrame = now;
     if (current) {
       const g = current.group;
+      if (g.userData.mixer) g.userData.mixer.update(dt);
       const grow = Math.min((now - current.born) / 500, 1);
       let s = Math.max(easeOutBack(grow), 0.001);
 
@@ -525,6 +581,9 @@
     renderer.render(scene, camera);
     requestAnimationFrame(animate);
   }
+
+  // 切り替えたときにすぐ出せるよう、先に読み込んでおく
+  MODELS.forEach((model) => { if (model.kenney) loadKenney(model.kenney); });
 
   show(0, false);
   requestAnimationFrame(animate);
