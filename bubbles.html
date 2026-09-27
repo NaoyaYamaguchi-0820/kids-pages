@@ -25,10 +25,45 @@
     width: 100%;
     height: 100%;
   }
+  #sound {
+    position: fixed;
+    top: calc(16px + env(safe-area-inset-top));
+    right: calc(16px + env(safe-area-inset-right));
+    width: 72px;
+    height: 72px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.85);
+    box-shadow: 0 4px 0 #9cc3e6;
+    color: #4a6fa5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+  #sound:active {
+    transform: translateY(3px);
+    box-shadow: 0 1px 0 #9cc3e6;
+  }
+  #sound svg {
+    width: 44px;
+    height: 44px;
+  }
+  #sound .on { display: none; }
+  #sound.enabled .on { display: inline; }
+  #sound.enabled .off { display: none; }
 </style>
 </head>
 <body>
 <canvas id="stage"></canvas>
+<button id="sound" type="button" aria-label="おとをだす" aria-pressed="false">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"/>
+    <g class="on"><path d="M16 9a4 4 0 0 1 0 6"/><path d="M18.5 6.5a7.5 7.5 0 0 1 0 11"/></g>
+    <g class="off"><path d="M16 9l5 6"/><path d="M21 9l-5 6"/></g>
+  </svg>
+</button>
 <script>
 (() => {
   const canvas = document.getElementById('stage');
@@ -50,16 +85,31 @@
   resize();
 
   // ---- 音（Web Audio で生成するのでオフラインでも鳴る） ----
+  // 音はボタンで明示的にオンにしたときだけ鳴らす
   let audio = null;
+  let soundOn = false;
   function ensureAudio() {
+    if (!soundOn) return null;
     if (!audio) {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return null;
+      // iPhone のマナーモードでも鳴るようにする（対応ブラウザのみ）
+      if (navigator.audioSession) navigator.audioSession.type = 'playback';
       audio = new AC();
     }
     if (audio.state === 'suspended') audio.resume();
     return audio;
   }
+
+  const soundButton = document.getElementById('sound');
+  soundButton.addEventListener('click', () => {
+    soundOn = !soundOn;
+    soundButton.classList.toggle('enabled', soundOn);
+    soundButton.setAttribute('aria-pressed', String(soundOn));
+    soundButton.setAttribute('aria-label', soundOn ? 'おとをけす' : 'おとをだす');
+    // オンにしたことが分かるように一音鳴らす
+    if (soundOn) playPop((minRadius() + maxRadius()) / 2);
+  });
 
   // ドレミファソラシド
   const NOTES = [523.25, 587.33, 659.25, 698.46, 783.99, 880.0, 987.77, 1046.5];
